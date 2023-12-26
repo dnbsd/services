@@ -1,4 +1,4 @@
-package natsrpc
+package natsrequester
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestService_Start(t *testing.T) {
+func TestService(t *testing.T) {
 	const subject = "test"
 	nc := newNatsServerAndConnection(t)
 	outputCh := make(chan OutputMessage)
