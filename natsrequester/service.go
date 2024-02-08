@@ -2,23 +2,25 @@ package natsrequester
 
 import (
 	"context"
-	"github.com/dnbsd/services/convertor"
 	"github.com/dnbsd/services/natsconsumer"
 	"github.com/dnbsd/services/natspublisher"
+	"github.com/dnbsd/services/proto"
+	"github.com/dnbsd/services/proto/adapters"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
+	"log/slog"
 )
 
 type Arguments struct {
-	Subject  string
-	Group    string
-	OutputCh chan<- OutputMessage
+	Logger  *slog.Logger
+	Conn    *nats.Conn
+	Subject string
+	Group   string
 }
 
 type OutputMessage struct {
 	Subject string
 	Data    []byte
-	ReplyFn func(context.Context, []byte) error
 }
 
 type replyMessage struct {
@@ -27,97 +29,55 @@ type replyMessage struct {
 }
 
 type Service struct {
-	//logger *slog.Logger
-	nc *nats.Conn
+	args            Arguments
+	consumer        *natsconsumer.Service
+	consumerAdapter *adapters.Source[proto.Event, proto.Request]
+	responseAdapter *adapters.Sink[proto.Response, proto.Event]
+	publisher       *natspublisher.Service
 }
 
-func New(nc *nats.Conn) *Service {
+func New(args Arguments) *Service {
+	consumer := natsconsumer.New(natsconsumer.Arguments{
+		// TODO: logger
+		Conn:    args.Conn,
+		Subject: args.Subject,
+		Group:   args.Group,
+	})
+	consumerAdapter := adapters.NewSource(consumer, func(event proto.Event) proto.Request {
+		body := event.Body.(natsconsumer.OutputMessage)
+		return proto.Request{
+			Body: OutputMessage{
+				Subject: body.Subject,
+				Data:    body.Data,
+			},
+			RespondTo: nil, // TODO
+		}
+	})
+	publisher := natspublisher.New(natspublisher.Arguments{
+		// TODO: logger
+		Logger: nil,
+		Conn:   args.Conn,
+	})
+	responseAdapter := adapters.NewSink(publisher, func(response proto.Response) proto.Event {
+		if response.Error != nil {
+			return proto.Event{
+				Body: response.Error,
+			}
+		}
+		return proto.Event{
+			Body: response.Result
+		}
+	})
+
 	return &Service{
-		nc: nc,
+		args:     args,
+		consumer: consumer,
+		outputCh: make(chan proto.Request),
 	}
 }
 
-func (s *Service) Start(ctx context.Context, args Arguments) error {
-	var (
-		natsConsumerOutCh = make(chan natsconsumer.OutputMessage, 1024)
-		replyCh           = make(chan replyMessage, 1024)
-		natsPublisherInCh = make(chan natspublisher.InputMessage, 1024)
-	)
-
+func (s *Service) Start(ctx context.Context) error {
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		return natsconsumer.New(
-			s.nc,
-		).Start(
-			groupCtx,
-			natsconsumer.Arguments{
-				Subject:  args.Subject,
-				Group:    args.Group,
-				OutputCh: natsConsumerOutCh,
-			},
-		)
-	})
-
-	group.Go(func() error {
-		return convertor.New[
-			natsconsumer.OutputMessage,
-			OutputMessage,
-		](
-			natsConsumerOutCh,
-			args.OutputCh,
-			func(msg natsconsumer.OutputMessage) OutputMessage {
-				return OutputMessage{
-					Subject: msg.Subject,
-					Data:    msg.Data,
-					ReplyFn: func(ctx context.Context, b []byte) error {
-						select {
-						case replyCh <- replyMessage{
-							Subject: msg.ReplySubject,
-							Data:    b,
-						}:
-						case <-ctx.Done():
-							return ctx.Err()
-						}
-						return nil
-					},
-				}
-			},
-		).Start(
-			groupCtx,
-			convertor.Arguments{},
-		)
-	})
-
-	group.Go(func() error {
-		return convertor.New[
-			replyMessage,
-			natspublisher.InputMessage,
-		](
-			replyCh,
-			natsPublisherInCh,
-			func(msg replyMessage) natspublisher.InputMessage {
-				return natspublisher.InputMessage{
-					Subject: msg.Subject,
-					Data:    msg.Data,
-				}
-			},
-		).Start(
-			groupCtx,
-			convertor.Arguments{},
-		)
-	})
-
-	group.Go(func() error {
-		args := natspublisher.Arguments{
-			InputCh: natsPublisherInCh,
-		}
-		return natspublisher.New(
-			s.nc,
-		).Start(
-			groupCtx,
-			args,
-		)
-	})
 
 	err := group.Wait()
 	if err != nil {
@@ -125,4 +85,8 @@ func (s *Service) Start(ctx context.Context, args Arguments) error {
 	}
 
 	return nil
+}
+
+func (s *Service) consumerConvertor(event proto.Event) proto.Request {
+
 }

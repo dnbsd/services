@@ -2,13 +2,19 @@ package natsconsumer
 
 import (
 	"context"
+	"github.com/dnbsd/services/proto"
 	"github.com/nats-io/nats.go"
+	"log/slog"
 )
 
+var _ proto.Service = &Service{}
+var _ proto.EventProducer = &Service{}
+
 type Arguments struct {
-	Subject  string
-	Group    string
-	OutputCh chan<- OutputMessage
+	Logger  *slog.Logger
+	Conn    *nats.Conn
+	Subject string
+	Group   string
 }
 
 type OutputMessage struct {
@@ -18,41 +24,48 @@ type OutputMessage struct {
 }
 
 type Service struct {
-	//logger *slog.Logger
-	nc *nats.Conn
+	args     Arguments
+	outputCh chan proto.Event
 }
 
-func New(nc *nats.Conn) *Service {
+func New(args Arguments) *Service {
 	return &Service{
-		nc: nc,
+		args:     args,
+		outputCh: make(chan proto.Event),
 	}
 }
 
-func (s *Service) Start(ctx context.Context, args Arguments) error {
+func (s *Service) Start(ctx context.Context) error {
 	inputCh := make(chan *nats.Msg, 1024)
-	subscription, err := s.nc.ChanQueueSubscribe(args.Subject, args.Group, inputCh)
+	subscription, err := s.args.Conn.ChanQueueSubscribe(s.args.Subject, s.args.Group, inputCh)
 	if err != nil {
 		return err
 	}
 	defer subscription.Drain()
 
-	select {
-	case inMsg := <-inputCh:
-		outMsg := OutputMessage{
-			Subject:      inMsg.Subject,
-			ReplySubject: inMsg.Reply,
-			Data:         inMsg.Data,
-		}
-
+	for {
 		select {
-		case args.OutputCh <- outMsg:
+		case inMsg := <-inputCh:
+			outMsg := proto.Event{
+				Body: OutputMessage{
+					Subject:      inMsg.Subject,
+					ReplySubject: inMsg.Reply,
+					Data:         inMsg.Data,
+				},
+			}
+
+			select {
+			case s.outputCh <- outMsg:
+			case <-ctx.Done():
+				return nil
+			}
+
 		case <-ctx.Done():
 			return nil
 		}
-
-	case <-ctx.Done():
-		return nil
 	}
+}
 
-	return nil
+func (s *Service) Output() <-chan proto.Event {
+	return s.outputCh
 }

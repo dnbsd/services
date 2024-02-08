@@ -8,13 +8,11 @@ import (
 var ErrNoResponder = errors.New("request has no responder")
 
 type Event struct {
-	Method string
-	Params any
+	Body any
 }
 
 type Request struct {
-	Method    string
-	Params    any
+	Body      any
 	RespondTo ResponseConsumer
 }
 

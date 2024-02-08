@@ -17,7 +17,7 @@ type ServiceA struct {
 func (s *ServiceA) Start(ctx context.Context) error {
 	for {
 		s.outputCh <- proto.Event{
-			Params: `{"request":"ok"}`,
+			Body: `{"request":"ok"}`,
 		}
 	}
 }

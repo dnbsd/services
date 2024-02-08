@@ -18,6 +18,7 @@ type RequestProducer interface {
 	Producer[Request]
 }
 
+// FIXME: using MT any because of recursive type error!
 type Consumer[MT any] interface {
 	Input() chan<- MT
 }
