@@ -2,11 +2,14 @@ package replyhandler
 
 import (
 	"context"
+	"github.com/dnbsd/services/proto"
 	"log/slog"
 )
 
 var (
-// TODO: add interface tests
+	_ proto.Service            = &Service[struct{}]{}
+	_ proto.Producer[struct{}] = &Service[struct{}]{}
+	_ proto.Consumer[struct{}] = &Service[struct{}]{}
 )
 
 type Arguments struct {

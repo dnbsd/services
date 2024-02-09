@@ -22,19 +22,19 @@ type InputMessage struct {
 	Data    []byte
 }
 
-type Service[MT any] struct {
+type Service[ST any] struct {
 	args      Arguments
-	source    proto.Producer[MT]
-	convertor func(MT) InputMessage
+	source    proto.Producer[ST]
+	convertor func(ST) InputMessage
 }
 
-func New[MT any](args Arguments) *Service[MT] {
-	return &Service[MT]{
+func New[ST any](args Arguments) *Service[ST] {
+	return &Service[ST]{
 		args: args,
 	}
 }
 
-func (s *Service[MT]) Start(ctx context.Context) error {
+func (s *Service[ST]) Start(ctx context.Context) error {
 	logger := s.args.Logger
 	logger.Info("started")
 	defer logger.Info("stopped")
@@ -68,7 +68,7 @@ func (s *Service[MT]) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Service[MT]) Connect(source proto.Producer[MT], convertor func(MT) InputMessage) {
+func (s *Service[ST]) Connect(source proto.Producer[ST], convertor func(ST) InputMessage) {
 	s.source = source
 	s.convertor = convertor
 }
