@@ -7,8 +7,10 @@ import (
 	"log/slog"
 )
 
-var _ proto.Service = &Service[proto.Request]{}
-var _ proto.Service = &Service[proto.Event]{}
+var (
+	_ proto.Service                         = &Service[struct{}]{}
+	_ proto.Adapter[struct{}, InputMessage] = &Service[struct{}]{}
+)
 
 type Arguments struct {
 	Logger *slog.Logger
@@ -20,29 +22,44 @@ type InputMessage struct {
 	Data    []byte
 }
 
-type Service[MT proto.Request | proto.Event] struct {
+type Service[MT any] struct {
 	args      Arguments
 	source    proto.Producer[MT]
 	convertor func(MT) InputMessage
 }
 
-func New[MT proto.Request | proto.Event](args Arguments) *Service[MT] {
+func New[MT any](args Arguments) *Service[MT] {
 	return &Service[MT]{
 		args: args,
 	}
 }
 
 func (s *Service[MT]) Start(ctx context.Context) error {
+	logger := s.args.Logger
+	logger.Info("started")
+	defer logger.Info("stopped")
+
+	defer func() {
+		err := recover()
+		if err != nil {
+			logger.Error("recovered from panic", "error", err)
+			return
+		}
+	}()
+
 	for {
 		select {
 		case inMsg := <-s.source.Output():
+			logger.Debug("received a message")
+
 			msg := s.convertor(inMsg)
 			err := s.args.Conn.PublishMsg(&nats.Msg{
 				Subject: msg.Subject,
 				Data:    msg.Data,
 			})
 			if err != nil {
-				return err
+				logger.Warn("cannot publish a NATS message", "error", err)
+				continue
 			}
 
 		case <-ctx.Done():

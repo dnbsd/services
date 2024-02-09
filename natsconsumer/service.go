@@ -7,8 +7,10 @@ import (
 	"log/slog"
 )
 
-var _ proto.Service = &Service{}
-var _ proto.EventProducer = &Service{}
+var (
+	_ proto.Service                 = &Service{}
+	_ proto.Producer[OutputMessage] = &Service{}
+)
 
 type Arguments struct {
 	Logger  *slog.Logger
@@ -25,17 +27,29 @@ type OutputMessage struct {
 
 type Service struct {
 	args     Arguments
-	outputCh chan proto.Event
+	outputCh chan OutputMessage
 }
 
 func New(args Arguments) *Service {
 	return &Service{
 		args:     args,
-		outputCh: make(chan proto.Event),
+		outputCh: make(chan OutputMessage),
 	}
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	logger := s.args.Logger
+	logger.Info("started")
+	defer logger.Info("stopped")
+
+	defer func() {
+		err := recover()
+		if err != nil {
+			logger.Error("recovered from panic", "error", err)
+			return
+		}
+	}()
+
 	inputCh := make(chan *nats.Msg, 1024)
 	subscription, err := s.args.Conn.ChanQueueSubscribe(s.args.Subject, s.args.Group, inputCh)
 	if err != nil {
@@ -46,16 +60,16 @@ func (s *Service) Start(ctx context.Context) error {
 	for {
 		select {
 		case inMsg := <-inputCh:
-			outMsg := proto.Event{
-				Body: OutputMessage{
-					Subject:      inMsg.Subject,
-					ReplySubject: inMsg.Reply,
-					Data:         inMsg.Data,
-				},
-			}
+			logger.Debug("received a message")
 
+			outMsg := OutputMessage{
+				Subject:      inMsg.Subject,
+				ReplySubject: inMsg.Reply,
+				Data:         inMsg.Data,
+			}
 			select {
 			case s.outputCh <- outMsg:
+				logger.Debug("pushed a message to output channel")
 			case <-ctx.Done():
 				return nil
 			}
@@ -66,6 +80,6 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Service) Output() <-chan proto.Event {
+func (s *Service) Output() <-chan OutputMessage {
 	return s.outputCh
 }

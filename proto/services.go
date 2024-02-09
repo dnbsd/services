@@ -10,27 +10,10 @@ type Producer[MT any] interface {
 	Output() <-chan MT
 }
 
-type EventProducer interface {
-	Producer[Event]
-}
-
-type RequestProducer interface {
-	Producer[Request]
-}
-
-// FIXME: using MT any because of recursive type error!
 type Consumer[MT any] interface {
 	Input() chan<- MT
 }
 
-type EventConsumer interface {
-	Consumer[Event]
-}
-
-type RequestConsumer interface {
-	Consumer[Request]
-}
-
-type ResponseConsumer interface {
-	Consumer[Response]
+type Adapter[ST, IT any] interface {
+	Connect(Producer[ST], func(ST) IT)
 }

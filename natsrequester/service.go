@@ -4,8 +4,9 @@ import (
 	"context"
 	"github.com/dnbsd/services/natsconsumer"
 	"github.com/dnbsd/services/natspublisher"
+	"github.com/dnbsd/services/natsrequester/services/replyhandler"
+	"github.com/dnbsd/services/natsrequester/services/requesthandler"
 	"github.com/dnbsd/services/proto"
-	"github.com/dnbsd/services/proto/adapters"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/errgroup"
 	"log/slog"
@@ -19,40 +20,76 @@ type Arguments struct {
 }
 
 type OutputMessage struct {
+	Subject      string
+	Data         []byte
+	replySubject string
+	replyTo      proto.Consumer[replyMessage]
+}
+
+func (m OutputMessage) Reply(ctx context.Context, data []byte) error {
+	message := replyMessage{
+		Subject: m.replySubject,
+		Data:    data,
+	}
+	select {
+	case m.replyTo.Input() <- message:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+type replyMessage struct {
 	Subject string
 	Data    []byte
 }
 
 type Service struct {
-	args            Arguments
-	consumer        *natsconsumer.Service
-	consumerAdapter *adapters.Sink[proto.Event, proto.Request]
-	responseAdapter *adapters.Sink[proto.Response, proto.Event]
-	publisher       *natspublisher.Service[proto.Event]
+	args           Arguments
+	consumer       *natsconsumer.Service
+	requestHandler *requesthandler.Service[natsconsumer.OutputMessage, OutputMessage]
+	replyHandler   *replyhandler.Service[replyMessage]
+	publisher      *natspublisher.Service[replyMessage]
 }
 
 func New(args Arguments) *Service {
+	logger := args.Logger
 	return &Service{
 		args: args,
 		consumer: natsconsumer.New(natsconsumer.Arguments{
-			// TODO: logger
-			Logger:  nil,
+			Logger:  logger.With("component", "natsconsumer"),
 			Conn:    args.Conn,
 			Subject: args.Subject,
 			Group:   args.Group,
 		}),
-		consumerAdapter: adapters.NewSink[proto.Event, proto.Request](),
-		responseAdapter: adapters.NewSink[proto.Response, proto.Event](),
-		publisher: natspublisher.New[proto.Event](natspublisher.Arguments{
-			// TODO: logger
-			Logger: nil,
+		requestHandler: requesthandler.New[natsconsumer.OutputMessage, OutputMessage](requesthandler.Arguments{
+			Logger: logger.With("component", "requesthandler"),
+		}),
+		replyHandler: replyhandler.New[replyMessage](replyhandler.Arguments{
+			Logger: logger.With("component", "replyhandler"),
+		}),
+		publisher: natspublisher.New[replyMessage](natspublisher.Arguments{
+			Logger: logger.With("component", "natspublisher"),
 			Conn:   args.Conn,
 		}),
 	}
 }
 
 func (s *Service) Start(ctx context.Context) error {
-	s.consumerAdapter.Connect(s.consumer, s.consumerAdapterConvertor)
+	logger := s.args.Logger
+	logger.Info("started")
+	defer logger.Info("stopped")
+
+	defer func() {
+		err := recover()
+		if err != nil {
+			logger.Error("recovered from panic", "error", err)
+			return
+		}
+	}()
+
+	s.requestHandler.Connect(s.consumer, s.consumerConvertor)
+	s.publisher.Connect(s.replyHandler, s.replyConvertor)
 
 	group, groupCtx := errgroup.WithContext(ctx)
 
@@ -61,11 +98,11 @@ func (s *Service) Start(ctx context.Context) error {
 	})
 
 	group.Go(func() error {
-		return s.consumerAdapter.Start(groupCtx)
+		return s.requestHandler.Start(groupCtx)
 	})
 
 	group.Go(func() error {
-		return s.responseAdapter.Start(groupCtx)
+		return s.replyHandler.Start(groupCtx)
 	})
 
 	group.Go(func() error {
@@ -80,14 +117,22 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) Output() <-chan proto.Request {
-	return s.consumerAdapter.Output()
+func (s *Service) Output() <-chan OutputMessage {
+	return s.requestHandler.Output()
 }
 
-func (s *Service) consumerAdapterConvertor(event proto.Event) proto.Request {
-	// TODO: convert an event!
-	return proto.Request{
-		Body:      nil,
-		RespondTo: s.responseAdapter,
+func (s *Service) consumerConvertor(message natsconsumer.OutputMessage) OutputMessage {
+	return OutputMessage{
+		Subject:      message.Subject,
+		Data:         message.Data,
+		replySubject: message.ReplySubject,
+		replyTo:      s.replyHandler,
+	}
+}
+
+func (s *Service) replyConvertor(message replyMessage) natspublisher.InputMessage {
+	return natspublisher.InputMessage{
+		Subject: message.Subject,
+		Data:    message.Data,
 	}
 }
