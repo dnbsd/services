@@ -7,8 +7,8 @@ import (
 	"log/slog"
 )
 
-var _ proto.Service = &Service{}
-var _ proto.EventConsumer = &Service{}
+var _ proto.Service = &Service[proto.Request]{}
+var _ proto.Service = &Service[proto.Event]{}
 
 type Arguments struct {
 	Logger *slog.Logger
@@ -20,29 +20,27 @@ type InputMessage struct {
 	Data    []byte
 }
 
-type Service struct {
-	args    Arguments
-	inputCh chan proto.Event
+type Service[MT proto.Request | proto.Event] struct {
+	args      Arguments
+	source    proto.Producer[MT]
+	convertor func(MT) InputMessage
 }
 
-func New(args Arguments) *Service {
-	return &Service{
-		args:    args,
-		inputCh: make(chan proto.Event),
+func New[MT proto.Request | proto.Event](args Arguments) *Service[MT] {
+	return &Service[MT]{
+		args: args,
 	}
 }
 
-func (s *Service) Start(ctx context.Context) error {
+func (s *Service[MT]) Start(ctx context.Context) error {
 	for {
 		select {
-		case inMsg := <-s.inputCh:
-			body := inMsg.Body.(InputMessage)
-			outMsg := &nats.Msg{
-				Subject: body.Subject,
-				Data:    body.Data,
-			}
-
-			err := s.args.Conn.PublishMsg(outMsg)
+		case inMsg := <-s.source.Output():
+			msg := s.convertor(inMsg)
+			err := s.args.Conn.PublishMsg(&nats.Msg{
+				Subject: msg.Subject,
+				Data:    msg.Data,
+			})
 			if err != nil {
 				return err
 			}
@@ -53,6 +51,7 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Service) Input() chan<- proto.Event {
-	return s.inputCh
+func (s *Service[MT]) Connect(source proto.Producer[MT], convertor func(MT) InputMessage) {
+	s.source = source
+	s.convertor = convertor
 }

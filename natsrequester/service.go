@@ -23,61 +23,54 @@ type OutputMessage struct {
 	Data    []byte
 }
 
-type replyMessage struct {
-	Subject string
-	Data    []byte
-}
-
 type Service struct {
 	args            Arguments
 	consumer        *natsconsumer.Service
-	consumerAdapter *adapters.Source[proto.Event, proto.Request]
+	consumerAdapter *adapters.Sink[proto.Event, proto.Request]
 	responseAdapter *adapters.Sink[proto.Response, proto.Event]
-	publisher       *natspublisher.Service
+	publisher       *natspublisher.Service[proto.Event]
 }
 
 func New(args Arguments) *Service {
-	consumer := natsconsumer.New(natsconsumer.Arguments{
-		// TODO: logger
-		Conn:    args.Conn,
-		Subject: args.Subject,
-		Group:   args.Group,
-	})
-	consumerAdapter := adapters.NewSource(consumer, func(event proto.Event) proto.Request {
-		body := event.Body.(natsconsumer.OutputMessage)
-		return proto.Request{
-			Body: OutputMessage{
-				Subject: body.Subject,
-				Data:    body.Data,
-			},
-			RespondTo: nil, // TODO
-		}
-	})
-	publisher := natspublisher.New(natspublisher.Arguments{
-		// TODO: logger
-		Logger: nil,
-		Conn:   args.Conn,
-	})
-	responseAdapter := adapters.NewSink(publisher, func(response proto.Response) proto.Event {
-		if response.Error != nil {
-			return proto.Event{
-				Body: response.Error,
-			}
-		}
-		return proto.Event{
-			Body: response.Result
-		}
-	})
-
 	return &Service{
-		args:     args,
-		consumer: consumer,
-		outputCh: make(chan proto.Request),
+		args: args,
+		consumer: natsconsumer.New(natsconsumer.Arguments{
+			// TODO: logger
+			Logger:  nil,
+			Conn:    args.Conn,
+			Subject: args.Subject,
+			Group:   args.Group,
+		}),
+		consumerAdapter: adapters.NewSink[proto.Event, proto.Request](),
+		responseAdapter: adapters.NewSink[proto.Response, proto.Event](),
+		publisher: natspublisher.New[proto.Event](natspublisher.Arguments{
+			// TODO: logger
+			Logger: nil,
+			Conn:   args.Conn,
+		}),
 	}
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	s.consumerAdapter.Connect(s.consumer, s.consumerAdapterConvertor)
+
 	group, groupCtx := errgroup.WithContext(ctx)
+
+	group.Go(func() error {
+		return s.consumer.Start(groupCtx)
+	})
+
+	group.Go(func() error {
+		return s.consumerAdapter.Start(groupCtx)
+	})
+
+	group.Go(func() error {
+		return s.responseAdapter.Start(groupCtx)
+	})
+
+	group.Go(func() error {
+		return s.publisher.Start(groupCtx)
+	})
 
 	err := group.Wait()
 	if err != nil {
@@ -87,6 +80,14 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumerConvertor(event proto.Event) proto.Request {
+func (s *Service) Output() <-chan proto.Request {
+	return s.consumerAdapter.Output()
+}
 
+func (s *Service) consumerAdapterConvertor(event proto.Event) proto.Request {
+	// TODO: convert an event!
+	return proto.Request{
+		Body:      nil,
+		RespondTo: s.responseAdapter,
+	}
 }

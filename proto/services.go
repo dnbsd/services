@@ -6,7 +6,7 @@ type Service interface {
 	Start(context.Context) error
 }
 
-type Producer[MT Request | Event] interface {
+type Producer[MT any] interface {
 	Output() <-chan MT
 }
 
